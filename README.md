@@ -3,7 +3,7 @@
 A minimal sensor and dashboard for monitoring a plant growth cabinet with **5 layers**.  
 Each layer logs **temperature (°C)**, **humidity (%)**, and **light (lux)** to Google Sheets, generates an **AI status update**, and displays everything in a small **static frontend**.
 
-Frontend deployed via github pages: https://setri100.github.io/sepal/
+Frontend deployed via github pages: joreslab.github.io/sepal/
 
 ## What it does
 
