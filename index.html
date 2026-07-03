@@ -357,18 +357,6 @@
         </div>
       </header>
 
-      <div class="card card-tint-status" id="statusCard">
-        <div class="card-head">
-          <div>
-            <div class="card-title">Latest sensor status</div>
-          </div>
-          <div class="status-time" id="aiStatusTime">—</div>
-        </div>
-        <div class="status-body">
-          <div class="status-text" id="aiStatusText">Loading…</div>
-        </div>
-      </div>
-
       <div class="card card-tint-overview" id="overviewCard">
         <div class="card-head">
           <div>
@@ -399,7 +387,7 @@
         </div>
       </div>
 
-      <!-- Layers card (expand-all moved here) -->
+      <!-- Layers card -->
       <div class="card card-tint-layers">
         <div class="card-head">
           <div>
@@ -434,8 +422,6 @@
   <script>
     const DATA_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRRw7CacfMewqTsK6rZL4HDzgCjaIGFO1PgaiSClaNDofw9uI4ssa-I0nKuS79FmwWF-pYqkOYh1Wui/pub?gid=0&single=true&output=csv";
 
-    const STATUS_GID = "183875317";
-    const STATUS_URL = `https://docs.google.com/spreadsheets/d/e/2PACX-1vRRw7CacfMewqTsK6rZL4HDzgCjaIGFO1PgaiSClaNDofw9uI4ssa-I0nKuS79FmwWF-pYqkOYh1Wui/pub?gid=${STATUS_GID}&single=true&output=csv`;
 
     const REFRESH_MS = 300000;
     const HISTORY_POINTS = 270;
@@ -643,9 +629,6 @@
       ctx.stroke();
     }
 
-
-    // Overview day/night charts. This stays fully static-GitHub compatible:
-    // the browser fetches CSV, computes the split, and redraws canvas plots locally.
     const DAY_LUX_THRESHOLD = 60;
 
     function meanNonNull(vals) {
@@ -693,7 +676,6 @@
 
       rows.sort((a, b) => a.tms - b.tms);
 
-      // Same logic as your Python: exclude the currently incomplete latest date.
       const latestDate = rows.length ? rows[rows.length - 1].dateKey : null;
       if (latestDate) rows = rows.filter(r => r.dateKey !== latestDate);
 
@@ -782,13 +764,14 @@
         return ticks;
       }
 
-      const tempTicks = buildAxisTicks(tempMin, tempMax, 0.5, 10);
+      // fully static y axis lims
+      tempMin = 20;
+      tempMax = 32;
+      const tempTicks = buildAxisTicks(tempMin, tempMax, 0.5, 30);
+
+
       const luxTicks = buildAxisTicks(luxMin, luxMax, 500, 10);
 
-      if (tempTicks.length >= 2) {
-        tempMin = tempTicks[0];
-        tempMax = tempTicks[tempTicks.length - 1];
-      }
       if (luxTicks.length >= 2) {
         luxMin = luxTicks[0];
         luxMax = luxTicks[luxTicks.length - 1];
@@ -1251,42 +1234,6 @@
       }
     }
 
-    async function loadStatusSheet() {
-      const timeEl = document.getElementById("aiStatusTime");
-      const textEl = document.getElementById("aiStatusText");
-
-      if (!timeEl || !textEl) return;
-
-      try {
-        const res = await fetch(STATUS_URL, { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const text = await res.text();
-
-        const table = parseCSV(text);
-        const objs = toObjects(table);
-        if (!objs.length) throw new Error("No rows in status sheet.");
-
-        const latest = objs[objs.length - 1];
-
-        // Expect columns: ts_utc, window_hours, ai_status
-        const ts = latest.ts_utc || latest.ts || latest.timestamp || "";
-        const windowHours = latest.window_hours || "";
-        const status = latest.ai_status || latest.status || "";
-
-        timeEl.textContent = ts
-          ? `Summary generated: ${formatDateTimeDE(ts)}${windowHours ? ` using KIconnect • Data processed: last ${windowHours} hours` : ""}`
-          : (windowHours ? `window ${windowHours}h` : "—");
-
-        textEl.innerHTML = status
-          ? renderInlineBold(status)
-          : "<span class='small'>No status text found in the latest row.</span>";
-
-      } catch (e) {
-        timeEl.textContent = "—";
-        textEl.textContent = `Error loading status: ${e.message}`;
-      }
-    }
-
     async function loadOnce() {
       const statusEl = document.getElementById("status");
       const eventsEl = document.getElementById("events");
@@ -1337,7 +1284,7 @@
       }
     }
 
-    // Expand all / Collapse all button (now inside layers card)
+    // Expand all / Collapse all button 
     document.getElementById("toggleAllBtn").addEventListener("click", () => {
       if (!window.__expandedLayers) window.__expandedLayers = new Set();
 
@@ -1355,7 +1302,7 @@
     });
 
     async function refreshAll() {
-      await Promise.allSettled([ loadOnce(), loadStatusSheet() ]);
+      await loadOnce();
     }
 
     refreshAll();
