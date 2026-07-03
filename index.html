@@ -288,6 +288,33 @@
     .overview-controls input[type="range"]{
       width: 100%;
     }
+    .overview-metric-controls{
+      grid-column: 1 / -1;
+      display:flex;
+      flex-wrap:wrap;
+      gap: 10px 14px;
+      align-items:center;
+      padding-top: 2px;
+    }
+    .overview-metric-option{
+      display:inline-flex;
+      align-items:center;
+      gap: 6px;
+      font-size: 12px;
+      color: #374151;
+      user-select:none;
+      white-space: nowrap;
+    }
+    .overview-metric-option input{
+      margin: 0;
+    }
+    .overview-metric-option input:disabled + span{
+      color: var(--muted);
+    }
+    .overview-metric-hint{
+      color: var(--muted);
+      font-weight: 500;
+    }
     .overview-reset-btn{
       padding: 6px 12px;
       font-size: 12px;
@@ -361,7 +388,7 @@
         <div class="card-head">
           <div>
             <div class="card-title">Overview: day vs night</div>
-            <div class="small">Mean temperature and light across all layers. Dots are raw timepoints; lines are daily period means.</div>
+            <div class="small">Mean temperature, light and humidity across all layers. Dots are raw timepoints; lines are daily period means.</div>
           </div>
         </div>
         <div class="overview-body">
@@ -370,6 +397,12 @@
             <label class="small">Start <input type="range" id="overviewStart" min="0" max="0" value="0" step="1"></label>
             <label class="small">End <input type="range" id="overviewEnd" min="0" max="0" value="0" step="1"></label>
             <button type="button" id="overviewReset" class="overview-reset-btn">Show all</button>
+            <div class="overview-metric-controls" id="overviewMetricControls" aria-label="Overview metrics">
+              <div class="small"><strong>Metrics</strong> <span class="overview-metric-hint">max 2</span></div>
+              <label class="overview-metric-option"><input type="checkbox" data-overview-metric="temp" checked><span>Temperature</span></label>
+              <label class="overview-metric-option"><input type="checkbox" data-overview-metric="lux" checked><span>Light</span></label>
+              <label class="overview-metric-option"><input type="checkbox" data-overview-metric="humidity"><span>Humidity</span></label>
+            </div>
             <div class="overview-window-label" id="overviewWindowLabel">Loading…</div>
           </div>
           <div class="overview-grid">
@@ -694,12 +727,143 @@
         dateKey,
         tms: g.reduce((s, r) => s + r.tms, 0) / g.length,
         tempMean: meanNonNull(g.map(r => r.tempMean)),
+        humidityMean: meanNonNull(g.map(r => r.humidityMean)),
         luxMean: meanNonNull(g.map(r => r.luxMean)),
         nObs: g.length
       })).sort((a, b) => a.tms - b.tms);
     }
 
-    function drawOverviewChart(canvas, rows, period) {
+    const OVERVIEW_METRICS = {
+      temp: {
+        key: "tempMean",
+        shortLabel: "temp",
+        axisLabel: "Temperature mean (°C)",
+        color: "#2563eb",
+        dotColor: "rgba(37, 99, 235, 0.22)",
+        tickDigits: 1,
+        preferredStep: 1,
+        maxTicks: 30,
+        fixedMin: 20,
+        fixedMax: 32,
+        minZero: false
+      },
+      lux: {
+        key: "luxMean",
+        shortLabel: "lux",
+        axisLabel: "Light mean (lx)",
+        color: "#f97316",
+        dotColor: "rgba(249, 115, 22, 0.18)",
+        tickDigits: 0,
+        preferredStep: 500,
+        maxTicks: 10,
+        minZero: true
+      },
+      humidity: {
+        key: "humidityMean",
+        shortLabel: "humidity",
+        axisLabel: "Humidity mean (%)",
+        color: "#16a34a",
+        dotColor: "rgba(22, 163, 74, 0.18)",
+        tickDigits: 1,
+        preferredStep: 5,
+        maxTicks: 10,
+        minZero: false
+      }
+    };
+
+    function buildAxisTicks(minVal, maxVal, preferredStep, maxTicks = 10) {
+      if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) return [];
+      let step = preferredStep;
+      let start = Math.floor(minVal / step) * step;
+      let end = Math.ceil(maxVal / step) * step;
+      let tickCount = Math.round((end - start) / step) + 1;
+
+      while (tickCount > maxTicks) {
+        step *= 2;
+        start = Math.floor(minVal / step) * step;
+        end = Math.ceil(maxVal / step) * step;
+        tickCount = Math.round((end - start) / step) + 1;
+      }
+
+      const ticks = [];
+      for (let v = start; v <= end + step * 0.25; v += step) {
+        ticks.push(Number(v.toFixed(10)));
+      }
+      return ticks;
+    }
+
+    function getSelectedOverviewMetrics() {
+      const boxes = Array.from(document.querySelectorAll("input[data-overview-metric]"));
+      const selected = boxes
+        .filter(b => b.checked)
+        .map(b => b.getAttribute("data-overview-metric"))
+        .filter(k => OVERVIEW_METRICS[k]);
+
+      return selected.length ? selected.slice(0, 2) : ["temp"];
+    }
+
+    function syncOverviewMetricCheckboxes() {
+      const boxes = Array.from(document.querySelectorAll("input[data-overview-metric]"));
+      if (!boxes.length) return ["temp", "lux"];
+
+      let checked = boxes.filter(b => b.checked);
+      if (!checked.length) {
+        boxes[0].checked = true;
+        checked = [boxes[0]];
+      }
+
+      const maxed = checked.length >= 2;
+      for (const box of boxes) {
+        box.disabled = !box.checked && maxed;
+      }
+
+      return getSelectedOverviewMetrics();
+    }
+
+    function buildMetricAxis(metricKey, rows, dailyAllPeriods) {
+      const cfg = OVERVIEW_METRICS[metricKey];
+      if (!cfg) return null;
+
+      let minVal = cfg.fixedMin;
+      let maxVal = cfg.fixedMax;
+
+      if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) {
+        const vals = rows
+          .map(r => r[cfg.key])
+          .concat(dailyAllPeriods.map(r => r[cfg.key]))
+          .filter(v => v !== null && Number.isFinite(v));
+
+        if (!vals.length) return null;
+
+        minVal = Math.min(...vals);
+        maxVal = Math.max(...vals);
+        if (minVal === maxVal) { minVal -= 1; maxVal += 1; }
+
+        const margin = (maxVal - minVal) * 0.08;
+        minVal = cfg.minZero ? Math.max(0, minVal - margin) : minVal - margin;
+        maxVal += margin;
+      }
+
+      let ticks = buildAxisTicks(minVal, maxVal, cfg.preferredStep, cfg.maxTicks);
+      if (ticks.length >= 2) {
+        minVal = ticks[0];
+        maxVal = ticks[ticks.length - 1];
+      } else {
+        ticks = [minVal, maxVal];
+      }
+
+      return {
+        cfg,
+        minVal,
+        maxVal,
+        ticks,
+        toPx(v, padT, plotH) {
+          return padT + (1 - (v - minVal) / (maxVal - minVal)) * plotH;
+        }
+      };
+    }
+
+    function drawOverviewChart(canvas, rows, period, selectedMetricKeys = getSelectedOverviewMetrics()) {
       const ctx = canvas.getContext("2d");
       const dpr = devicePixelRatio || 1;
       const width = canvas.clientWidth;
@@ -711,9 +875,11 @@
 
       const points = rows.filter(r => r.period === period);
       const daily = aggregateByDateAndPeriod(rows, period);
+      const dailyAllPeriods = aggregateByDateAndPeriod(rows, "day").concat(aggregateByDateAndPeriod(rows, "night"));
+      const metricKeys = selectedMetricKeys.filter(k => OVERVIEW_METRICS[k]).slice(0, 2);
 
       const padL = 56;
-      const padR = 64;
+      const padR = metricKeys.length > 1 ? 64 : 18;
       const padT = 24;
       const padB = 56;
       const plotW = width - padL - padR;
@@ -726,66 +892,34 @@
         return;
       }
 
-      const allT = points.map(p => p.tms).concat(daily.map(p => p.tms));
+      if (!metricKeys.length) {
+        ctx.fillStyle = "#666";
+        ctx.font = "12px system-ui";
+        ctx.fillText("Select at least one metric", padL, padT + 20);
+        return;
+      }
+
+      const allT = rows.map(p => p.tms).concat(dailyAllPeriods.map(p => p.tms));
       let xMin = Math.min(...allT);
       let xMax = Math.max(...allT);
       if (xMin === xMax) { xMin -= 1; xMax += 1; }
 
-      const tempVals = points.map(p => p.tempMean).concat(daily.map(p => p.tempMean)).filter(v => v !== null && Number.isFinite(v));
-      const luxVals = points.map(p => p.luxMean).concat(daily.map(p => p.luxMean)).filter(v => v !== null && Number.isFinite(v));
-
-      let tempMin = Math.min(...tempVals), tempMax = Math.max(...tempVals);
-      let luxMin = Math.min(...luxVals), luxMax = Math.max(...luxVals);
-      if (tempMin === tempMax) { tempMin -= 1; tempMax += 1; }
-      if (luxMin === luxMax) { luxMin -= 1; luxMax += 1; }
-      const tempMargin = (tempMax - tempMin) * 0.08;
-      const luxMargin = (luxMax - luxMin) * 0.08;
-      tempMin -= tempMargin; tempMax += tempMargin;
-      luxMin = Math.max(0, luxMin - luxMargin); luxMax += luxMargin;
-
-      function buildAxisTicks(minVal, maxVal, preferredStep, maxTicks = 10) {
-        if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) return [];
-        let step = preferredStep;
-        let start = Math.floor(minVal / step) * step;
-        let end = Math.ceil(maxVal / step) * step;
-        let tickCount = Math.round((end - start) / step) + 1;
-
-        while (tickCount > maxTicks) {
-          step *= 2;
-          start = Math.floor(minVal / step) * step;
-          end = Math.ceil(maxVal / step) * step;
-          tickCount = Math.round((end - start) / step) + 1;
-        }
-
-        const ticks = [];
-        for (let v = start; v <= end + step * 0.25; v += step) {
-          ticks.push(Number(v.toFixed(10)));
-        }
-        return ticks;
-      }
-
-      // fully static y axis lims
-      tempMin = 20;
-      tempMax = 32;
-      const tempTicks = buildAxisTicks(tempMin, tempMax, 1, 30);
-
-
-      const luxTicks = buildAxisTicks(luxMin, luxMax, 500, 10);
-
-      if (luxTicks.length >= 2) {
-        luxMin = luxTicks[0];
-        luxMax = luxTicks[luxTicks.length - 1];
+      const axes = metricKeys.map(k => ({ key: k, axis: buildMetricAxis(k, rows, dailyAllPeriods) })).filter(x => x.axis);
+      if (!axes.length) {
+        ctx.fillStyle = "#666";
+        ctx.font = "12px system-ui";
+        ctx.fillText("No data for selected metrics", padL, padT + 20);
+        return;
       }
 
       const xToPx = t => padL + ((t - xMin) / (xMax - xMin)) * plotW;
-      const tempToPx = v => padT + (1 - (v - tempMin) / (tempMax - tempMin)) * plotH;
-      const luxToPx = v => padT + (1 - (v - luxMin) / (luxMax - luxMin)) * plotH;
+      const axisForMetric = key => axes.find(a => a.key === key)?.axis;
 
-      // grid aligned to temperature axis ticks
+ 
       ctx.strokeStyle = "#eee";
       ctx.lineWidth = 1;
-      for (const tick of tempTicks) {
-        const y = tempToPx(tick);
+      for (const tick of axes[0].axis.ticks) {
+        const y = axes[0].axis.toPx(tick, padT, plotH);
         ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
       }
 
@@ -793,29 +927,36 @@
       ctx.strokeStyle = "#444";
       ctx.lineWidth = 1.2;
       ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(padL + plotW, padT); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
+      if (axes.length > 1) {
+        ctx.beginPath(); ctx.moveTo(padL + plotW, padT); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
+      }
       ctx.beginPath(); ctx.moveTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
 
       // y labels + tick marks
       ctx.font = "11px system-ui";
       ctx.textBaseline = "middle";
-      ctx.fillStyle = "#2563eb";
-      ctx.textAlign = "right";
-      for (const tick of tempTicks) {
-        const y = tempToPx(tick);
-        ctx.beginPath(); ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 1;
-        ctx.moveTo(padL - 4, y); ctx.lineTo(padL, y); ctx.stroke();
-        ctx.fillText(tick.toFixed(1), padL - 6, y);
+
+      function drawAxisTicks(axisInfo, side) {
+        const { cfg, ticks } = axisInfo;
+        ctx.fillStyle = cfg.color;
+        ctx.textAlign = side === "left" ? "right" : "left";
+        for (const tick of ticks) {
+          const y = axisInfo.toPx(tick, padT, plotH);
+          ctx.beginPath(); ctx.strokeStyle = cfg.color; ctx.lineWidth = 1;
+          if (side === "left") {
+            ctx.moveTo(padL - 4, y); ctx.lineTo(padL, y);
+            ctx.stroke();
+            ctx.fillText(tick.toFixed(cfg.tickDigits), padL - 6, y);
+          } else {
+            ctx.moveTo(padL + plotW, y); ctx.lineTo(padL + plotW + 4, y);
+            ctx.stroke();
+            ctx.fillText(tick.toFixed(cfg.tickDigits), padL + plotW + 6, y);
+          }
+        }
       }
 
-      ctx.fillStyle = "#f97316";
-      ctx.textAlign = "left";
-      for (const tick of luxTicks) {
-        const y = luxToPx(tick);
-        ctx.beginPath(); ctx.strokeStyle = "#f97316"; ctx.lineWidth = 1;
-        ctx.moveTo(padL + plotW, y); ctx.lineTo(padL + plotW + 4, y); ctx.stroke();
-        ctx.fillText(tick.toFixed(0), padL + plotW + 6, y);
-      }
+      drawAxisTicks(axes[0].axis, "left");
+      if (axes.length > 1) drawAxisTicks(axes[1].axis, "right");
 
       // x labels
       ctx.fillStyle = "#444";
@@ -833,62 +974,69 @@
       ctx.rotate(-Math.PI / 2);
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillStyle = "#2563eb";
-      ctx.fillText("Temperature mean (°C)", 0, 0);
+      ctx.fillStyle = axes[0].axis.cfg.color;
+      ctx.fillText(axes[0].axis.cfg.axisLabel, 0, 0);
       ctx.restore();
 
-      ctx.save();
-      ctx.translate(width - 16, padT + plotH / 2);
-      ctx.rotate(Math.PI / 2);
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = "#f97316";
-      ctx.fillText("Light mean (lx)", 0, 0);
-      ctx.restore();
+      if (axes.length > 1) {
+        ctx.save();
+        ctx.translate(width - 16, padT + plotH / 2);
+        ctx.rotate(Math.PI / 2);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = axes[1].axis.cfg.color;
+        ctx.fillText(axes[1].axis.cfg.axisLabel, 0, 0);
+        ctx.restore();
+      }
 
       // raw datapoints as dots
       for (const p of points) {
         const x = xToPx(p.tms);
-        if (p.tempMean !== null) {
-          ctx.fillStyle = "rgba(37, 99, 235, 0.22)";
-          ctx.beginPath(); ctx.arc(x, tempToPx(p.tempMean), 2, 0, Math.PI * 2); ctx.fill();
-        }
-        if (p.luxMean !== null) {
-          ctx.fillStyle = "rgba(249, 115, 22, 0.18)";
-          ctx.beginPath(); ctx.arc(x, luxToPx(p.luxMean), 2, 0, Math.PI * 2); ctx.fill();
+        for (const metricKey of metricKeys) {
+          const axis = axisForMetric(metricKey);
+          if (!axis) continue;
+          const v = p[axis.cfg.key];
+          if (v !== null && Number.isFinite(v)) {
+            ctx.fillStyle = axis.cfg.dotColor;
+            ctx.beginPath(); ctx.arc(x, axis.toPx(v, padT, plotH), 2, 0, Math.PI * 2); ctx.fill();
+          }
         }
       }
 
-      function drawDailyLine(series, getY, color) {
-        const valid = series.filter(p => getY(p) !== null && Number.isFinite(getY(p)));
+      function drawDailyLine(series, metricKey) {
+        const axis = axisForMetric(metricKey);
+        if (!axis) return;
+        const valid = series.filter(p => p[axis.cfg.key] !== null && Number.isFinite(p[axis.cfg.key]));
         if (valid.length < 2) return;
-        ctx.strokeStyle = color;
+        ctx.strokeStyle = axis.cfg.color;
         ctx.lineWidth = 2.2;
         ctx.beginPath();
         valid.forEach((p, idx) => {
           const x = xToPx(p.tms);
-          const y = color === "#2563eb" ? tempToPx(getY(p)) : luxToPx(getY(p));
+          const y = axis.toPx(p[axis.cfg.key], padT, plotH);
           if (idx === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
         ctx.stroke();
       }
 
-      drawDailyLine(daily, p => p.tempMean, "#2563eb");
-      drawDailyLine(daily, p => p.luxMean, "#f97316");
+      for (const metricKey of metricKeys) drawDailyLine(daily, metricKey);
 
       // legend
       ctx.font = "12px system-ui";
       ctx.textBaseline = "middle";
       ctx.textAlign = "left";
-      ctx.fillStyle = "#2563eb";
-      ctx.fillRect(padL, 8, 10, 3);
-      ctx.fillText("temp", padL + 16, 10);
-      ctx.fillStyle = "#f97316";
-      ctx.fillRect(padL + 72, 8, 10, 3);
-      ctx.fillText("lux", padL + 88, 10);
+      let legendX = padL;
+      for (const metricKey of metricKeys) {
+        const axis = axisForMetric(metricKey);
+        if (!axis) continue;
+        ctx.fillStyle = axis.cfg.color;
+        ctx.fillRect(legendX, 8, 10, 3);
+        ctx.fillText(axis.cfg.shortLabel, legendX + 16, 10);
+        legendX += ctx.measureText(axis.cfg.shortLabel).width + 44;
+      }
       ctx.fillStyle = "#6b7280";
-      ctx.fillText(`${points.length} timepoints`, padL + 142, 10);
+      ctx.fillText(`${points.length} timepoints`, legendX + 2, 10);
     }
 
     function renderOverviewFromControls() {
@@ -903,8 +1051,9 @@
 
       if (!dateKeys.length) {
         labelEl.textContent = "No overview data available.";
-        drawOverviewChart(dayCanvas, [], "day");
-        drawOverviewChart(nightCanvas, [], "night");
+        const selectedMetrics = syncOverviewMetricCheckboxes();
+        drawOverviewChart(dayCanvas, [], "day", selectedMetrics);
+        drawOverviewChart(nightCanvas, [], "night", selectedMetrics);
         return;
       }
 
@@ -918,15 +1067,18 @@
       const dayN = visibleRows.filter(r => r.period === "day").length;
       const nightN = visibleRows.filter(r => r.period === "night").length;
 
-      labelEl.textContent = `${formatDateKeyDE(startKey)} – ${formatDateKeyDE(endKey)} · ${visibleRows.length} points total (${dayN} day, ${nightN} night) · latest incomplete date excluded`;
-      drawOverviewChart(dayCanvas, visibleRows, "day");
-      drawOverviewChart(nightCanvas, visibleRows, "night");
+      const selectedMetrics = syncOverviewMetricCheckboxes();
+      const metricLabel = selectedMetrics.map(k => OVERVIEW_METRICS[k]?.shortLabel ?? k).join(" + ");
+      labelEl.textContent = `${formatDateKeyDE(startKey)} – ${formatDateKeyDE(endKey)} · ${visibleRows.length} points total (${dayN} day, ${nightN} night) · ${metricLabel} · latest incomplete date excluded`;
+      drawOverviewChart(dayCanvas, visibleRows, "day", selectedMetrics);
+      drawOverviewChart(nightCanvas, visibleRows, "night", selectedMetrics);
     }
 
     function setupOverviewControls(rows) {
       const startEl = document.getElementById("overviewStart");
       const endEl = document.getElementById("overviewEnd");
       const resetBtn = document.getElementById("overviewReset");
+      const metricBoxes = Array.from(document.querySelectorAll("input[data-overview-metric]"));
       if (!startEl || !endEl || !resetBtn) return;
 
       const dateKeys = Array.from(new Set(rows.map(r => r.dateKey))).sort();
@@ -943,6 +1095,13 @@
 
         startEl.addEventListener("input", renderOverviewFromControls);
         endEl.addEventListener("input", renderOverviewFromControls);
+        metricBoxes.forEach(box => {
+          box.addEventListener("change", () => {
+            syncOverviewMetricCheckboxes();
+            renderOverviewFromControls();
+          });
+        });
+        syncOverviewMetricCheckboxes();
         resetBtn.addEventListener("click", () => {
           startEl.value = "0";
           endEl.value = String(Math.max(0, (window.__overviewDateKeys || []).length - 1));
