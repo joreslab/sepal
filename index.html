@@ -761,15 +761,48 @@
       tempMin -= tempMargin; tempMax += tempMargin;
       luxMin = Math.max(0, luxMin - luxMargin); luxMax += luxMargin;
 
+      function buildAxisTicks(minVal, maxVal, preferredStep, maxTicks = 10) {
+        if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) return [];
+        let step = preferredStep;
+        let start = Math.floor(minVal / step) * step;
+        let end = Math.ceil(maxVal / step) * step;
+        let tickCount = Math.round((end - start) / step) + 1;
+
+        while (tickCount > maxTicks) {
+          step *= 2;
+          start = Math.floor(minVal / step) * step;
+          end = Math.ceil(maxVal / step) * step;
+          tickCount = Math.round((end - start) / step) + 1;
+        }
+
+        const ticks = [];
+        for (let v = start; v <= end + step * 0.25; v += step) {
+          ticks.push(Number(v.toFixed(10)));
+        }
+        return ticks;
+      }
+
+      const tempTicks = buildAxisTicks(tempMin, tempMax, 0.5, 10);
+      const luxTicks = buildAxisTicks(luxMin, luxMax, 500, 10);
+
+      if (tempTicks.length >= 2) {
+        tempMin = tempTicks[0];
+        tempMax = tempTicks[tempTicks.length - 1];
+      }
+      if (luxTicks.length >= 2) {
+        luxMin = luxTicks[0];
+        luxMax = luxTicks[luxTicks.length - 1];
+      }
+
       const xToPx = t => padL + ((t - xMin) / (xMax - xMin)) * plotW;
       const tempToPx = v => padT + (1 - (v - tempMin) / (tempMax - tempMin)) * plotH;
       const luxToPx = v => padT + (1 - (v - luxMin) / (luxMax - luxMin)) * plotH;
 
-      // grid
+      // grid aligned to temperature axis ticks
       ctx.strokeStyle = "#eee";
       ctx.lineWidth = 1;
-      for (let k = 0; k <= 4; k++) {
-        const y = padT + (k / 4) * plotH;
+      for (const tick of tempTicks) {
+        const y = tempToPx(tick);
         ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
       }
 
@@ -780,17 +813,26 @@
       ctx.beginPath(); ctx.moveTo(padL + plotW, padT); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
 
-      // y labels
+      // y labels + tick marks
       ctx.font = "11px system-ui";
       ctx.textBaseline = "middle";
       ctx.fillStyle = "#2563eb";
       ctx.textAlign = "right";
-      ctx.fillText(tempMax.toFixed(1), padL - 6, padT + 8);
-      ctx.fillText(tempMin.toFixed(1), padL - 6, padT + plotH);
+      for (const tick of tempTicks) {
+        const y = tempToPx(tick);
+        ctx.beginPath(); ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 1;
+        ctx.moveTo(padL - 4, y); ctx.lineTo(padL, y); ctx.stroke();
+        ctx.fillText(tick.toFixed(1), padL - 6, y);
+      }
+
       ctx.fillStyle = "#f97316";
       ctx.textAlign = "left";
-      ctx.fillText(luxMax.toFixed(0), padL + plotW + 6, padT + 8);
-      ctx.fillText(luxMin.toFixed(0), padL + plotW + 6, padT + plotH);
+      for (const tick of luxTicks) {
+        const y = luxToPx(tick);
+        ctx.beginPath(); ctx.strokeStyle = "#f97316"; ctx.lineWidth = 1;
+        ctx.moveTo(padL + plotW, y); ctx.lineTo(padL + plotW + 4, y); ctx.stroke();
+        ctx.fillText(tick.toFixed(0), padL + plotW + 6, y);
+      }
 
       // x labels
       ctx.fillStyle = "#444";
