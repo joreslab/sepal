@@ -14,6 +14,7 @@
       --shadow: 0 10px 30px rgba(0,0,0,.06);
 
       --tint-status: #f9fafb;
+      --tint-overview: #f8fafc;
       --tint-layers: #f8fafc;
       --tint-events: #f9fafb;
     }
@@ -261,6 +262,78 @@
     .events-tag.off{ color: #b45309; }
     .events-when{ color: var(--muted); font-variant-numeric: tabular-nums; }
 
+
+
+    /* Overview day/night charts */
+    .card-tint-overview{ background: var(--tint-overview); }
+    .overview-body{
+      padding: 12px;
+    }
+    .overview-controls{
+      display:grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      align-items:center;
+      margin-bottom: 12px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+    }
+    @media (min-width: 900px){
+      .overview-controls{
+        grid-template-columns: 120px 1fr 1fr auto;
+      }
+    }
+    .overview-controls input[type="range"]{
+      width: 100%;
+    }
+    .overview-reset-btn{
+      padding: 6px 12px;
+      font-size: 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #fff;
+      cursor: pointer;
+      transition: 0.15s ease;
+      white-space: nowrap;
+    }
+    .overview-reset-btn:hover{ background: #f3f4f6; }
+    .overview-window-label{
+      grid-column: 1 / -1;
+      font-size: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .overview-grid{
+      display:grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+    @media (min-width: 900px){
+      .overview-grid{ grid-template-columns: 1fr 1fr; }
+    }
+    .overview-chart-card{
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px;
+      background:#fff;
+    }
+    .overview-chart-card h3{
+      margin: 0 0 4px 0;
+      font-size: 13px;
+      color: #374151;
+      font-weight: 800;
+    }
+    .overview-chart-note{
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .overview-chart-card canvas{
+      height: 300px;
+    }
+
     @media (max-width: 720px){
       header{ align-items:flex-start; flex-direction:column; }
       .meta{ text-align:left; }
@@ -293,6 +366,36 @@
         </div>
         <div class="status-body">
           <div class="status-text" id="aiStatusText">Loading…</div>
+        </div>
+      </div>
+
+      <div class="card card-tint-overview" id="overviewCard">
+        <div class="card-head">
+          <div>
+            <div class="card-title">Overview: day vs night</div>
+            <div class="small">Mean temperature and light across all layers. Dots are raw timepoints; lines are daily period means.</div>
+          </div>
+        </div>
+        <div class="overview-body">
+          <div class="overview-controls">
+            <div class="small"><strong>Date window</strong></div>
+            <label class="small">Start <input type="range" id="overviewStart" min="0" max="0" value="0" step="1"></label>
+            <label class="small">End <input type="range" id="overviewEnd" min="0" max="0" value="0" step="1"></label>
+            <button type="button" id="overviewReset" class="overview-reset-btn">Show all</button>
+            <div class="overview-window-label" id="overviewWindowLabel">Loading…</div>
+          </div>
+          <div class="overview-grid">
+            <div class="overview-chart-card">
+              <h3>Day</h3>
+              <div class="overview-chart-note">lux_mean &gt; 60</div>
+              <canvas id="overviewDay"></canvas>
+            </div>
+            <div class="overview-chart-card">
+              <h3>Night</h3>
+              <div class="overview-chart-note">lux_mean ≤ 60</div>
+              <canvas id="overviewNight"></canvas>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -538,6 +641,300 @@
         else ctx.lineTo(px, py);
       }
       ctx.stroke();
+    }
+
+
+    // Overview day/night charts. This stays fully static-GitHub compatible:
+    // the browser fetches CSV, computes the split, and redraws canvas plots locally.
+    const DAY_LUX_THRESHOLD = 60;
+
+    function meanNonNull(vals) {
+      const good = vals.filter(v => v !== null && Number.isFinite(v));
+      return good.length ? good.reduce((s, v) => s + v, 0) / good.length : null;
+    }
+
+    function localDateKey(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    }
+
+    function formatDateKeyDE(dateKey) {
+      if (!dateKey) return "—";
+      const [y, m, d] = dateKey.split("-");
+      return `${d}.${m}.${y}`;
+    }
+
+    function buildOverviewRows(objs) {
+      let rows = [];
+
+      for (const o of objs) {
+        const ts = o.ts || o.ts_utc || o.timestamp || "";
+        const d = new Date(ts);
+        if (isNaN(d)) continue;
+
+        const tempMean = meanNonNull([1,2,3,4,5].map(i => numOrNull(o[`temp_${i}`])));
+        const humidityMean = meanNonNull([1,2,3,4,5].map(i => numOrNull(o[`humidity_${i}`])));
+        const luxMean = meanNonNull([1,2,3,4,5].map(i => numOrNull(o[`lux_${i}`])));
+
+        if (tempMean === null && luxMean === null && humidityMean === null) continue;
+
+        rows.push({
+          ts,
+          tms: d.getTime(),
+          dateKey: localDateKey(d),
+          tempMean,
+          humidityMean,
+          luxMean,
+          period: (luxMean !== null && luxMean > DAY_LUX_THRESHOLD) ? "day" : "night"
+        });
+      }
+
+      rows.sort((a, b) => a.tms - b.tms);
+
+      // Same logic as your Python: exclude the currently incomplete latest date.
+      const latestDate = rows.length ? rows[rows.length - 1].dateKey : null;
+      if (latestDate) rows = rows.filter(r => r.dateKey !== latestDate);
+
+      return rows;
+    }
+
+    function aggregateByDateAndPeriod(rows, period) {
+      const groups = new Map();
+      for (const r of rows) {
+        if (r.period !== period) continue;
+        if (!groups.has(r.dateKey)) groups.set(r.dateKey, []);
+        groups.get(r.dateKey).push(r);
+      }
+
+      return Array.from(groups.entries()).map(([dateKey, g]) => ({
+        dateKey,
+        tms: g.reduce((s, r) => s + r.tms, 0) / g.length,
+        tempMean: meanNonNull(g.map(r => r.tempMean)),
+        luxMean: meanNonNull(g.map(r => r.luxMean)),
+        nObs: g.length
+      })).sort((a, b) => a.tms - b.tms);
+    }
+
+    function drawOverviewChart(canvas, rows, period) {
+      const ctx = canvas.getContext("2d");
+      const dpr = devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const points = rows.filter(r => r.period === period);
+      const daily = aggregateByDateAndPeriod(rows, period);
+
+      const padL = 56;
+      const padR = 64;
+      const padT = 24;
+      const padB = 56;
+      const plotW = width - padL - padR;
+      const plotH = height - padT - padB;
+
+      if (points.length < 2) {
+        ctx.fillStyle = "#666";
+        ctx.font = "12px system-ui";
+        ctx.fillText("Not enough data for this period", padL, padT + 20);
+        return;
+      }
+
+      const allT = points.map(p => p.tms).concat(daily.map(p => p.tms));
+      let xMin = Math.min(...allT);
+      let xMax = Math.max(...allT);
+      if (xMin === xMax) { xMin -= 1; xMax += 1; }
+
+      const tempVals = points.map(p => p.tempMean).concat(daily.map(p => p.tempMean)).filter(v => v !== null && Number.isFinite(v));
+      const luxVals = points.map(p => p.luxMean).concat(daily.map(p => p.luxMean)).filter(v => v !== null && Number.isFinite(v));
+
+      let tempMin = Math.min(...tempVals), tempMax = Math.max(...tempVals);
+      let luxMin = Math.min(...luxVals), luxMax = Math.max(...luxVals);
+      if (tempMin === tempMax) { tempMin -= 1; tempMax += 1; }
+      if (luxMin === luxMax) { luxMin -= 1; luxMax += 1; }
+      const tempMargin = (tempMax - tempMin) * 0.08;
+      const luxMargin = (luxMax - luxMin) * 0.08;
+      tempMin -= tempMargin; tempMax += tempMargin;
+      luxMin = Math.max(0, luxMin - luxMargin); luxMax += luxMargin;
+
+      const xToPx = t => padL + ((t - xMin) / (xMax - xMin)) * plotW;
+      const tempToPx = v => padT + (1 - (v - tempMin) / (tempMax - tempMin)) * plotH;
+      const luxToPx = v => padT + (1 - (v - luxMin) / (luxMax - luxMin)) * plotH;
+
+      // grid
+      ctx.strokeStyle = "#eee";
+      ctx.lineWidth = 1;
+      for (let k = 0; k <= 4; k++) {
+        const y = padT + (k / 4) * plotH;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      }
+
+      // axes
+      ctx.strokeStyle = "#444";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(padL + plotW, padT); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
+
+      // y labels
+      ctx.font = "11px system-ui";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#2563eb";
+      ctx.textAlign = "right";
+      ctx.fillText(tempMax.toFixed(1), padL - 6, padT + 8);
+      ctx.fillText(tempMin.toFixed(1), padL - 6, padT + plotH);
+      ctx.fillStyle = "#f97316";
+      ctx.textAlign = "left";
+      ctx.fillText(luxMax.toFixed(0), padL + plotW + 6, padT + 8);
+      ctx.fillText(luxMin.toFixed(0), padL + plotW + 6, padT + plotH);
+
+      // x labels
+      ctx.fillStyle = "#444";
+      ctx.textBaseline = "alphabetic";
+      ctx.textAlign = "left";
+      ctx.fillText(formatDateKeyDE(localDateKey(new Date(xMin))), padL, padT + plotH + 20);
+      ctx.textAlign = "right";
+      ctx.fillText(formatDateKeyDE(localDateKey(new Date(xMax))), padL + plotW, padT + plotH + 20);
+      ctx.textAlign = "center";
+      ctx.fillText("Date", padL + plotW / 2, height - 10);
+
+      // axis labels
+      ctx.save();
+      ctx.translate(16, padT + plotH / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#2563eb";
+      ctx.fillText("Temperature mean (°C)", 0, 0);
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(width - 16, padT + plotH / 2);
+      ctx.rotate(Math.PI / 2);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#f97316";
+      ctx.fillText("Light mean (lx)", 0, 0);
+      ctx.restore();
+
+      // raw datapoints as dots
+      for (const p of points) {
+        const x = xToPx(p.tms);
+        if (p.tempMean !== null) {
+          ctx.fillStyle = "rgba(37, 99, 235, 0.22)";
+          ctx.beginPath(); ctx.arc(x, tempToPx(p.tempMean), 2, 0, Math.PI * 2); ctx.fill();
+        }
+        if (p.luxMean !== null) {
+          ctx.fillStyle = "rgba(249, 115, 22, 0.18)";
+          ctx.beginPath(); ctx.arc(x, luxToPx(p.luxMean), 2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+
+      function drawDailyLine(series, getY, color) {
+        const valid = series.filter(p => getY(p) !== null && Number.isFinite(getY(p)));
+        if (valid.length < 2) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        valid.forEach((p, idx) => {
+          const x = xToPx(p.tms);
+          const y = color === "#2563eb" ? tempToPx(getY(p)) : luxToPx(getY(p));
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      drawDailyLine(daily, p => p.tempMean, "#2563eb");
+      drawDailyLine(daily, p => p.luxMean, "#f97316");
+
+      // legend
+      ctx.font = "12px system-ui";
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#2563eb";
+      ctx.fillRect(padL, 8, 10, 3);
+      ctx.fillText("temp", padL + 16, 10);
+      ctx.fillStyle = "#f97316";
+      ctx.fillRect(padL + 72, 8, 10, 3);
+      ctx.fillText("lux", padL + 88, 10);
+      ctx.fillStyle = "#6b7280";
+      ctx.fillText(`${points.length} timepoints`, padL + 142, 10);
+    }
+
+    function renderOverviewFromControls() {
+      const rows = window.__overviewRows || [];
+      const dateKeys = window.__overviewDateKeys || [];
+      const startEl = document.getElementById("overviewStart");
+      const endEl = document.getElementById("overviewEnd");
+      const labelEl = document.getElementById("overviewWindowLabel");
+      const dayCanvas = document.getElementById("overviewDay");
+      const nightCanvas = document.getElementById("overviewNight");
+      if (!startEl || !endEl || !labelEl || !dayCanvas || !nightCanvas) return;
+
+      if (!dateKeys.length) {
+        labelEl.textContent = "No overview data available.";
+        drawOverviewChart(dayCanvas, [], "day");
+        drawOverviewChart(nightCanvas, [], "night");
+        return;
+      }
+
+      let a = Number(startEl.value);
+      let b = Number(endEl.value);
+      if (a > b) [a, b] = [b, a];
+
+      const startKey = dateKeys[a];
+      const endKey = dateKeys[b];
+      const visibleRows = rows.filter(r => r.dateKey >= startKey && r.dateKey <= endKey);
+      const dayN = visibleRows.filter(r => r.period === "day").length;
+      const nightN = visibleRows.filter(r => r.period === "night").length;
+
+      labelEl.textContent = `${formatDateKeyDE(startKey)} – ${formatDateKeyDE(endKey)} · ${visibleRows.length} points total (${dayN} day, ${nightN} night) · latest incomplete date excluded`;
+      drawOverviewChart(dayCanvas, visibleRows, "day");
+      drawOverviewChart(nightCanvas, visibleRows, "night");
+    }
+
+    function setupOverviewControls(rows) {
+      const startEl = document.getElementById("overviewStart");
+      const endEl = document.getElementById("overviewEnd");
+      const resetBtn = document.getElementById("overviewReset");
+      if (!startEl || !endEl || !resetBtn) return;
+
+      const dateKeys = Array.from(new Set(rows.map(r => r.dateKey))).sort();
+      window.__overviewRows = rows;
+      window.__overviewDateKeys = dateKeys;
+
+      const maxIdx = Math.max(0, dateKeys.length - 1);
+      startEl.max = String(maxIdx);
+      endEl.max = String(maxIdx);
+
+      if (!window.__overviewControlsInitialized) {
+        startEl.value = "0";
+        endEl.value = String(maxIdx);
+
+        startEl.addEventListener("input", renderOverviewFromControls);
+        endEl.addEventListener("input", renderOverviewFromControls);
+        resetBtn.addEventListener("click", () => {
+          startEl.value = "0";
+          endEl.value = String(Math.max(0, (window.__overviewDateKeys || []).length - 1));
+          renderOverviewFromControls();
+        });
+        window.__overviewControlsInitialized = true;
+      } else {
+        startEl.value = String(Math.min(Number(startEl.value), maxIdx));
+        endEl.value = String(Math.min(Number(endEl.value), maxIdx));
+      }
+
+      renderOverviewFromControls();
+    }
+
+    function renderOverview(objs) {
+      const rows = buildOverviewRows(objs);
+      setupOverviewControls(rows);
     }
 
     // UI
@@ -878,6 +1275,7 @@
         window.__historyByLayer = historyByLayer;
         if (!window.__expandedLayers) window.__expandedLayers = new Set();
         renderCabinet(latest, historyByLayer);
+        renderOverview(objs);
 
         statusEl.textContent = ts
           ? `Last update: ${formatDateTimeDE(ts)}`
@@ -924,6 +1322,9 @@
     window.addEventListener("resize", () => {
       if (window.__latest && window.__historyByLayer) {
         renderCabinet(window.__latest, window.__historyByLayer);
+      }
+      if (window.__overviewRows) {
+        renderOverviewFromControls();
       }
     });
   </script>
